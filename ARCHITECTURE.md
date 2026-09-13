@@ -1,89 +1,14 @@
 # Architecture — Duka POS
 
-Status: **PLANNED** application architecture, with Milestone 0 foundation
-**IMPLEMENTED** (package + docs + environment test only).
-
-This document records the architecture approved by the lead architect.
-It is not a claim that the layers below already run.
+Status: **PLANNED** application architecture, with Milestone 0–3.1 foundation
+**IMPLEMENTED** where noted.
 
 ## Shape
 
 Local-first **modular monolith** on the shop computer. One process. One
 SQLite file. Integrations as optional adapters.
 
-```
-Cashier Browser
-       ↓
-Application/API
-       ↓
-Domain
-       ↓
-Persistence
-       ↓
-SQLite
-       ↓
-Optional Integration Adapters
-```
-
-Cashier and manager UIs talk to the same local application over HTTP on the
-shop LAN (or localhost). There is no public database. There is no cloud
-source of truth.
-
-## Layers
-
-### Cashier browser
-
-Dedicated, simple till screen. USB/Bluetooth scanners are keyboard input.
-Camera scanning is extra, not required for the basic flow. The cashier UI
-must not become an ERP.
-
-Not implemented in M0.
-
-### Application / API
-
-FastAPI + Uvicorn. Thin HTTP boundary: authentication, validation, mapping
-to domain commands. No business rules live only in the API layer.
-
-Declared as a dependency in M0. No routes yet.
-
-### Domain
-
-Products, inventory, sales, payments, receipts, shifts, audit. Pure rules
-and invariants. The domain must not import Daraja, eTIMS, printer, or scale
-SDKs.
-
-Not implemented in M0.
-
-### Persistence
-
-SQLite is the local source of truth. See
-[ADR-001](docs/decisions/ADR-001-sqlite-local-source-of-truth.md).
-
-Required when the database is introduced:
-
-- foreign keys enabled
-- WAL mode
-- real transactions around sale + stock + payment writes
-
-No database file exists in M0.
-
-### Optional integration adapters
-
-Adapters sit **below** persistence of the local sale:
-
-- M-Pesa Daraja
-- KRA eTIMS
-- ESC/POS receipt printer
-- electronic scale
-- backup / remote access
-
-Adapters may fail. The local sale remains.
-
-**External services must not own the local sale lifecycle.**
-
 ## Money and quantity
-
-Floating-point must not be used for persisted money or quantity.
 
 - Money: integer Kenya cents. `KSh 160.00` = `16000`
 - Quantity: integer thousandths. `1.350 kg` = `1350`
@@ -96,63 +21,36 @@ stock left  = 50000 - 1350        = 48650 milli-kg = 48.65 kg
 gross profit = (16000 - 12000) * 1350 / 1000 = 5400 cents = KSh 54.00
 ```
 
-See [ADR-002](docs/decisions/ADR-002-integer-money-and-quantity.md).
+## Sale path
 
-## Sale path (planned)
+Cash:
 
 ```
-LOGIN → CREATE/LOOKUP PRODUCT → ADD STOCK → SELL
-  → persist sale + lines in one SQLite transaction
-  → deduct stock
-  → record payment (cash CONFIRMED immediately)
-  → generate receipt
-  → VIEW SALE
+SELL → COMPLETED + CONFIRMED + stock + receipt (one SQLite transaction)
 ```
 
-Later, if the tender is M-Pesa (M3.1 local foundation; Daraja is M3.2):
+M-Pesa (M3.1 local foundation; Daraja is M3.2):
 
 ```
 LOCAL SALE RECORD (status=PENDING_PAYMENT)
-  → payment PENDING  (no stock deduction, no receipt)
+  → payment PENDING, provider=DARAJA (identity only)
+  → NO stock deduction, NO reservation, NO receipt
   → [M3.2] Daraja adapter outside SQLite transaction
-  → callback / query
-  → confirm_payment_and_complete_sale (atomic: CONFIRMED + stock + receipt + COMPLETED)
+  → confirm_payment_and_complete_sale(
+        expected_amount_cents=…  # mandatory
+      )
+  → atomic: CONFIRMED + stock + receipt + COMPLETED
 ```
 
-Pending M-Pesa does **not** deduct stock. The local row is created before any network call.
-See [ADR-003](docs/decisions/ADR-003-payment-abstraction-and-pending-stock.md).
+Pending M-Pesa does **not** deduct stock. Confirmation requires mandatory
+amount equality. There is no cashier force-confirm API.
 
-eTIMS follows the same idea: local record, queue, submit, store KRA response,
-retry. Lack of KRA connectivity must not erase the shop sale.
+See [ADR-003](docs/decisions/ADR-003-payment-abstraction-and-pending-stock.md).
 
 ## What this architecture is not
 
 - Not microservices
-- Not KIFAA and not a Postgres ledger platform
-- Not Frappe / ERPNext
 - Not Docker-mandatory
-- Not Electron/Tauri in M0/M1
-- Not a fake M-Pesa or fake eTIMS implementation
-
-## Deployment (planned, untested)
-
-Native Python install on the shop PC is the default path. Docker may be
-offered later as optional packaging. A shop owner must be able to copy:
-
-- application
-- SQLite file
-- configuration (without leaking secrets in git)
-- later: assets, reports, backups
-
-to another compatible computer.
-
-This deployment path is **PLANNED**. It has not been tested on shop hardware.
-
-## Security (planned)
-
-- secrets only in environment / local config, never in git
-- password hashing
-- server-side authorization (cashiers do not receive cost/GP)
-- audit log for sensitive actions
-
-Not implemented in M0.
+- Not a live Daraja integration (M3.2 not implemented)
+- Not eTIMS
+- Not a fake M-Pesa network path
