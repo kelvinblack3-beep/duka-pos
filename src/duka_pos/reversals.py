@@ -55,46 +55,57 @@ def void_sale(
     if existing is not None or sale_row["status"] == "VOID":
         raise SaleAlreadyReversed(f"sale {sale_id} has already been reversed")
 
+    prior_status = sale_row["status"]
+    # PENDING_PAYMENT never deducted stock; COMPLETED did.
+    restore_stock = prior_status == "COMPLETED"
+
     now = _now_iso()
     with db_module.transaction(conn):
-        # Restore stock for each line.
-        lines = conn.execute(
-            "SELECT * FROM sale_lines WHERE sale_id = ?", (sale_id,)
-        ).fetchall()
-        for line in lines:
-            qty = line["quantity_milli"]
-            conn.execute(
-                """
-                UPDATE stock_balances
-                SET quantity_milli = quantity_milli + ?
-                WHERE product_id = ?
-                """,
-                (qty, line["product_id"]),
-            )
-            conn.execute(
-                """
-                INSERT INTO stock_movements (
-                    product_id, movement_type, quantity_milli, unit_cost_cents,
-                    reference_type, reference_id, occurred_at, user_id
-                ) VALUES (?, 'REVERSAL', ?, ?, 'SALE', ?, ?, ?)
-                """,
-                (
-                    line["product_id"],
-                    qty,
-                    line["unit_cost_cents"],
-                    sale_id,
-                    now,
-                    performed_by,
-                ),
-            )
+        if restore_stock:
+            lines = conn.execute(
+                "SELECT * FROM sale_lines WHERE sale_id = ?", (sale_id,)
+            ).fetchall()
+            for line in lines:
+                qty = line["quantity_milli"]
+                conn.execute(
+                    """
+                    UPDATE stock_balances
+                    SET quantity_milli = quantity_milli + ?
+                    WHERE product_id = ?
+                    """,
+                    (qty, line["product_id"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO stock_movements (
+                        product_id, movement_type, quantity_milli, unit_cost_cents,
+                        reference_type, reference_id, occurred_at, user_id
+                    ) VALUES (?, 'REVERSAL', ?, ?, 'SALE', ?, ?, ?)
+                    """,
+                    (
+                        line["product_id"],
+                        qty,
+                        line["unit_cost_cents"],
+                        sale_id,
+                        now,
+                        performed_by,
+                    ),
+                )
 
-        # Mark payment reversed.
+        # Confirmed → REVERSED; pending/initiated → CANCELLED.
         conn.execute(
             """
-            UPDATE payments SET status = 'REVERSED'
+            UPDATE payments SET status = 'REVERSED', updated_at = ?
             WHERE sale_id = ? AND status = 'CONFIRMED'
             """,
-            (sale_id,),
+            (now, sale_id),
+        )
+        conn.execute(
+            """
+            UPDATE payments SET status = 'CANCELLED', updated_at = ?
+            WHERE sale_id = ? AND status IN ('PENDING', 'INITIATED')
+            """,
+            (now, sale_id),
         )
 
         # Mark sale VOID (original totals preserved).
