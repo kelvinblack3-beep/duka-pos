@@ -13,7 +13,7 @@ from typing import Any
 
 from duka_pos import audit as audit_module
 from duka_pos import payments as payments_module
-from duka_pos.errors import InvalidSaleData, PaymentConflict, PaymentNotFound
+from duka_pos.errors import InvalidPaymentTransition, InvalidSaleData, PaymentConflict, PaymentNotFound
 from duka_pos.phone import normalize_ke_msisdn
 from duka_pos.providers.mpesa_daraja import (
     DarajaHttpError,
@@ -254,6 +254,7 @@ def _apply_query_result(
                 "payment_id": payment.id,
             }
 
+    # Phone correlation when query includes PhoneNumber.
     if query.phone_number is not None and str(query.phone_number).strip() != "":
         try:
             q_norm = normalize_ke_msisdn(str(query.phone_number))
@@ -295,6 +296,7 @@ def _apply_query_result(
 
     result_code = query.result_code
 
+    # --- Success ---
     if result_code == 0:
         if query.amount_kes is not None:
             expected_cents = int(query.amount_kes) * 100
@@ -347,6 +349,7 @@ def _apply_query_result(
             "status": confirmed.status,
         }
 
+    # --- Terminal cancel ---
     if result_code in _TERMINAL_CANCEL_CODES:
         try:
             payments_module.transition_payment(
@@ -356,25 +359,35 @@ def _apply_query_result(
                 last_error=_sanitize_error(query.result_desc) or None,
                 user_id=user_id,
             )
-        except Exception:
-            pass
+            final_status = "CANCELLED"
+        except (InvalidPaymentTransition, PaymentConflict):
+            # Race: another path (callback/reconcile) already moved the payment.
+            current = payments_module.get_payment(conn, payment.id)
+            final_status = current.status
+            if final_status not in ("CANCELLED", "FAILED", "CONFIRMED", "REVERSED", "REFUNDED"):
+                raise
         audit_module.record(
             conn,
             action="payment.reconcile_cancelled",
             user_id=user_id,
             entity_type="payment",
             entity_id=payment.id,
-            details={"result_code": result_code, "result_desc": _sanitize_error(query.result_desc)},
+            details={
+                "result_code": result_code,
+                "result_desc": _sanitize_error(query.result_desc),
+                "final_status": final_status,
+            },
         )
         conn.commit()
         return {
             "ok": True,
-            "reason": "cancelled",
+            "reason": "cancelled" if final_status == "CANCELLED" else "already_terminal",
             "result_code": result_code,
             "payment_id": payment.id,
-            "status": "CANCELLED",
+            "status": final_status,
         }
 
+    # --- Terminal failure ---
     if result_code in _TERMINAL_FAIL_CODES:
         try:
             payments_module.transition_payment(
@@ -384,25 +397,34 @@ def _apply_query_result(
                 last_error=_sanitize_error(query.result_desc) or None,
                 user_id=user_id,
             )
-        except Exception:
-            pass
+            final_status = "FAILED"
+        except (InvalidPaymentTransition, PaymentConflict):
+            current = payments_module.get_payment(conn, payment.id)
+            final_status = current.status
+            if final_status not in ("CANCELLED", "FAILED", "CONFIRMED", "REVERSED", "REFUNDED"):
+                raise
         audit_module.record(
             conn,
             action="payment.reconcile_failed",
             user_id=user_id,
             entity_type="payment",
             entity_id=payment.id,
-            details={"result_code": result_code, "result_desc": _sanitize_error(query.result_desc)},
+            details={
+                "result_code": result_code,
+                "result_desc": _sanitize_error(query.result_desc),
+                "final_status": final_status,
+            },
         )
         conn.commit()
         return {
             "ok": True,
-            "reason": "failed",
+            "reason": "failed" if final_status == "FAILED" else "already_terminal",
             "result_code": result_code,
             "payment_id": payment.id,
-            "status": "FAILED",
+            "status": final_status,
         }
 
+    # --- Ambiguous / still processing / unknown ---
     audit_module.record(
         conn,
         action="payment.reconcile_ambiguous",
