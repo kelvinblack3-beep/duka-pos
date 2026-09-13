@@ -7,3 +7,4 @@
 
 New ADRs are required before changing the database engine, money
 representation, or making Docker/cloud a requirement.
+- [ADR-003 Payment abstraction and pending stock](ADR-003-payment-abstraction-and-pending-stock.md)
