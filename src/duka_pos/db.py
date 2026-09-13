@@ -86,6 +86,56 @@ def init_db(conn: sqlite3.Connection) -> None:
                 "REFERENCES users (id)"
             )
 
+        # M3.1: additive payment provider / async fields (nullable for M1/M2 rows).
+        pay_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(payments)").fetchall()
+        }
+        for col, decl in (
+            ("provider", "TEXT"),
+            ("provider_checkout_request_id", "TEXT"),
+            ("provider_merchant_request_id", "TEXT"),
+            ("provider_receipt_number", "TEXT"),
+            ("phone_number", "TEXT"),
+            ("client_payment_reference", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("last_error", "TEXT"),
+        ):
+            if col not in pay_cols:
+                conn.execute(f"ALTER TABLE payments ADD COLUMN {col} {decl}")
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_checkout
+            ON payments (provider_checkout_request_id)
+            WHERE provider_checkout_request_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_payments_client_payment_ref
+            ON payments (client_payment_reference)
+            WHERE client_payment_reference IS NOT NULL
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_merchant
+            ON payments (provider_merchant_request_id)
+            WHERE provider_merchant_request_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_receipt
+            ON payments (provider_receipt_number)
+            WHERE provider_receipt_number IS NOT NULL
+            """
+        )
+
 
 def connect_and_init(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     """Convenience: open a connection and ensure the schema exists."""
