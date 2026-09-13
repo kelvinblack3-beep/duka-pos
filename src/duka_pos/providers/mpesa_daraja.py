@@ -319,7 +319,7 @@ def parse_stk_query_response(data: dict[str, Any]) -> StkQueryResult:
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"STK query ResultCode is not numeric: {data.get('ResultCode')!r}"
-        ) from exp
+        ) from exc
     merchant = data.get("MerchantRequestID")
     checkout = data.get("CheckoutRequestID")
     amount_kes = None
@@ -327,7 +327,7 @@ def parse_stk_query_response(data: dict[str, Any]) -> StkQueryResult:
     phone = None
     if "Amount" in data and data["Amount"] is not None:
         try:
-            amount_kes = int(float(data["Amount"]))
+            amount_kes = int(float(data["Amount"])
         except (TypeError, ValueError):
             pass
     if data.get("MpesaReceiptNumber") is not None:
