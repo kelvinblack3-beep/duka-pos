@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS sales (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     client_reference  TEXT NOT NULL UNIQUE,
     status            TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (status IN (
-                          'COMPLETED', 'VOID'
+                          'PENDING_PAYMENT', 'COMPLETED', 'VOID'
                       )),
     subtotal_cents    INTEGER NOT NULL CHECK (subtotal_cents >= 0),
     total_cents       INTEGER NOT NULL CHECK (total_cents >= 0),
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS sales (
 -- price changes must never alter historical sales.
 CREATE TABLE IF NOT EXISTS sale_lines (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_id            INTEGER NOT NULL REFERENCES sales (id),
+    sale_id            INTEGER NOT NULL REFERENCES products (id),
     product_id         INTEGER NOT NULL REFERENCES products (id),
     quantity_milli     INTEGER NOT NULL CHECK (quantity_milli > 0),
     unit_price_cents   INTEGER NOT NULL CHECK (unit_price_cents >= 0),
@@ -80,18 +80,39 @@ CREATE INDEX IF NOT EXISTS idx_sale_lines_sale ON sale_lines (sale_id);
 -- future adapters but are rejected by the domain layer in M1 — no fake
 -- M-Pesa is implemented. See errors.UnsupportedPaymentMethod.
 CREATE TABLE IF NOT EXISTS payments (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_id        INTEGER NOT NULL REFERENCES sales (id),
-    method         TEXT NOT NULL CHECK (method IN ('CASH', 'MPESA', 'CARD', 'OTHER')),
-    status         TEXT NOT NULL CHECK (status IN (
-                       'INITIATED', 'PENDING', 'CONFIRMED', 'FAILED',
-                       'CANCELLED', 'REVERSED', 'REFUNDED'
-                   )),
-    amount_cents   INTEGER NOT NULL CHECK (amount_cents >= 0),
-    created_at     TEXT NOT NULL
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id                      INTEGER NOT NULL REFERENCES sales (id),
+    method                       TEXT NOT NULL CHECK (method IN ('CASH', 'MPESA', 'CARD', 'OTHER')),
+    status                       TEXT NOT NULL CHECK (status IN (
+                                     'INITIATED', 'PENDING', 'CONFIRMED', 'FAILED',
+                                     'CANCELLED', 'REVERSED', 'REFUNDED'
+                                 )),
+    amount_cents                 INTEGER NOT NULL CHECK (amount_cents >= 0),
+    created_at                   TEXT NOT NULL,
+    provider                     TEXT,
+    provider_checkout_request_id TEXT,
+    provider_merchant_request_id TEXT,
+    provider_receipt_number      TEXT,
+    phone_number                 TEXT,
+    client_payment_reference     TEXT,
+    updated_at                   TEXT,
+    last_error                   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_payments_sale ON payments (sale_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_checkout
+    ON payments (provider_checkout_request_id)
+    WHERE provider_checkout_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status);
+CREATE INDEX IF NOT EXISTS idx_payments_client_payment_ref
+    ON payments (client_payment_reference)
+    WHERE client_payment_reference IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_merchant
+    ON payments (provider_merchant_request_id)
+    WHERE provider_merchant_request_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_receipt
+    ON payments (provider_receipt_number)
+    WHERE provider_receipt_number IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS receipts (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
