@@ -31,13 +31,29 @@ def _seed(conn):
     products_module.add_stock(conn, product_id=p.id, quantity_milli=50000)
     return p
 
-def _cb(checkout="ws_CO_test_1", amount=216, receipt="RCPT1", code=0):
-    body = {"MerchantRequestID": "mr-1", "CheckoutRequestID": checkout, "ResultCode": code, "ResultDesc": "ok"}
+def _cb(
+    checkout="ws_CO_test_1",
+    amount=216,
+    receipt="RCPT1",
+    code=0,
+    merchant="mr-1",
+    phone=254712345678,
+    include_phone=True,
+):
+    body = {
+        "MerchantRequestID": merchant,
+        "CheckoutRequestID": checkout,
+        "ResultCode": code,
+        "ResultDesc": "ok",
+    }
     if code == 0:
-        body["CallbackMetadata"] = {"Item": [
-            {"Name": "Amount", "Value": amount}, {"Name": "MpesaReceiptNumber", "Value": receipt},
-            {"Name": "PhoneNumber", "Value": 254712345678},
-        ]}
+        items = [
+            {"Name": "Amount", "Value": amount},
+            {"Name": "MpesaReceiptNumber", "Value": receipt},
+        ]
+        if include_phone and phone is not None:
+            items.append({"Name": "PhoneNumber", "Value": phone})
+        body["CallbackMetadata"] = {"Item": items}
     return {"Body": {"stkCallback": body}}
 
 def test_phone():
@@ -107,3 +123,108 @@ def test_parse_and_oauth_fail():
     prov = MpesaDarajaProvider(config=_cfg(), transport=tr); prov.clear_token_cache()
     with pytest.raises(DarajaHttpError):
         prov.get_access_token()
+
+
+def _initiate_mpesa(conn, client_ref: str, qty_milli: int = 1350, phone: str = "0712345678"):
+    p = _seed(conn)
+    sale = sales_module.create_sale(
+        conn,
+        client_reference=client_ref,
+        lines=[{"product_id": p.id, "quantity_milli": qty_milli}],
+        payment_method="MPESA",
+        phone_number=phone,
+    )
+    tr = FakeTransport()
+    prov = MpesaDarajaProvider(config=_cfg(), transport=tr)
+    prov.clear_token_cache()
+    mpesa_flow_module.initiate_stk_for_payment(conn, payment_id=sale.payment.id, provider=prov)
+    return p, sale
+
+
+def test_callback_wrong_merchant_request_id_rejected(conn):
+    """Correct CheckoutRequestID + WRONG MerchantRequestID → rejected, no state change."""
+    p, sale = _initiate_mpesa(conn, "sec-merchant")
+    stock_before = products_module.get_stock_balance_milli(conn, p.id)
+    r = mpesa_flow_module.process_stk_callback(conn, _cb(merchant="mr-WRONG"))
+    assert r["ok"] is False
+    assert r["reason"] == "merchant_mismatch"
+    pay = payments_module.get_payment(conn, sale.payment.id)
+    assert pay.status == "PENDING"
+    assert sales_module.get_sale(conn, sale.id).status == "PENDING_PAYMENT"
+    assert products_module.get_stock_balance_milli(conn, p.id) == stock_before
+
+
+def test_callback_wrong_phone_rejected(conn):
+    """Correct Checkout + Merchant + WRONG PhoneNumber → rejected, no state change."""
+    p, sale = _initiate_mpesa(conn, "sec-phone")
+    stock_before = products_module.get_stock_balance_milli(conn, p.id)
+    r = mpesa_flow_module.process_stk_callback(conn, _cb(phone=254799999999))
+    assert r["ok"] is False
+    assert r["reason"] == "phone_mismatch"
+    pay = payments_module.get_payment(conn, sale.payment.id)
+    assert pay.status == "PENDING"
+    assert sales_module.get_sale(conn, sale.id).status == "PENDING_PAYMENT"
+    assert products_module.get_stock_balance_milli(conn, p.id) == stock_before
+
+
+def test_callback_correct_still_confirms(conn):
+    """Correct callback still confirms normally (regression)."""
+    p, sale = _initiate_mpesa(conn, "sec-ok")
+    r = mpesa_flow_module.process_stk_callback(conn, _cb())
+    assert r["ok"] is True and r["reason"] == "confirmed"
+    assert payments_module.get_payment(conn, sale.payment.id).status == "CONFIRMED"
+    assert sales_module.get_sale(conn, sale.id).status == "COMPLETED"
+    assert products_module.get_stock_balance_milli(conn, p.id) == 48650
+
+
+def test_callback_duplicate_correct_idempotent(conn):
+    """Duplicate correct callback remains idempotent."""
+    p, sale = _initiate_mpesa(conn, "sec-dup")
+    r1 = mpesa_flow_module.process_stk_callback(conn, _cb())
+    r2 = mpesa_flow_module.process_stk_callback(conn, _cb())
+    assert r1["reason"] == "confirmed"
+    assert r2["reason"] == "already_confirmed"
+    assert products_module.get_stock_balance_milli(conn, p.id) == 48650
+    assert sales_module.get_sale(conn, sale.id).status == "COMPLETED"
+
+
+def test_callback_non_numeric_result_code_rejected(conn):
+    """Non-numeric ResultCode → controlled rejection, no state mutation."""
+    p, sale = _initiate_mpesa(conn, "sec-rc")
+    stock_before = products_module.get_stock_balance_milli(conn, p.id)
+    bad = {
+        "Body": {
+            "stkCallback": {
+                "MerchantRequestID": "mr-1",
+                "CheckoutRequestID": "ws_CO_test_1",
+                "ResultCode": "not-a-number",
+                "ResultDesc": "bogus",
+            }
+        }
+    }
+    r = mpesa_flow_module.process_stk_callback(conn, bad)
+    assert r["ok"] is False
+    assert r["reason"] == "malformed"
+    assert payments_module.get_payment(conn, sale.payment.id).status == "PENDING"
+    assert sales_module.get_sale(conn, sale.id).status == "PENDING_PAYMENT"
+    assert products_module.get_stock_balance_milli(conn, p.id) == stock_before
+
+
+def test_callback_unknown_checkout_rejected(conn):
+    """Unknown CheckoutRequestID → controlled rejection, no state mutation."""
+    p, sale = _initiate_mpesa(conn, "sec-unknown")
+    stock_before = products_module.get_stock_balance_milli(conn, p.id)
+    r = mpesa_flow_module.process_stk_callback(conn, _cb(checkout="ws_CO_UNKNOWN"))
+    assert r["ok"] is False
+    assert r["reason"] == "unknown_checkout"
+    assert payments_module.get_payment(conn, sale.payment.id).status == "PENDING"
+    assert sales_module.get_sale(conn, sale.id).status == "PENDING_PAYMENT"
+    assert products_module.get_stock_balance_milli(conn, p.id) == stock_before
+
+
+def test_callback_missing_phone_still_confirms_when_omitted(conn):
+    """Daraja may omit PhoneNumber; do not reject solely for absence."""
+    p, sale = _initiate_mpesa(conn, "sec-nophone")
+    r = mpesa_flow_module.process_stk_callback(conn, _cb(include_phone=False))
+    assert r["ok"] is True and r["reason"] == "confirmed"
+    assert sales_module.get_sale(conn, sale.id).status == "COMPLETED"
