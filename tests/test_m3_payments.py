@@ -37,7 +37,7 @@ def test_pending_mpesa_does_not_deduct_stock_or_create_receipt(conn):
         client_reference="mpesa-pending-1",
         lines=[{"product_id": product.id, "quantity_milli": 1_350}],
         payment_method="MPESA",
-        phone_number="254712345678",
+        phone_number="0712345678",
     )
     assert sale.status == "PENDING_PAYMENT"
     assert sale.payment is not None
@@ -57,7 +57,7 @@ def test_confirm_pending_with_correct_amount(conn):
         conn,
         client_reference="mpesa-confirm-ok",
         lines=[{"product_id": product.id, "quantity_milli": 1_350}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     payment_id = sale.payment.id
     confirmed = payments_module.confirm_payment_and_complete_sale(
@@ -81,7 +81,7 @@ def test_confirm_rejects_wrong_amount_leaves_pending(conn):
         conn,
         client_reference="mpesa-wrong-amt",
         lines=[{"product_id": product.id, "quantity_milli": 1_350}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     with pytest.raises(PaymentConflict):
         payments_module.confirm_payment_and_complete_sale(
@@ -101,7 +101,7 @@ def test_confirm_rejects_missing_amount(conn):
         conn,
         client_reference="mpesa-no-amount",
         lines=[{"product_id": product.id, "quantity_milli": 1_350}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     with pytest.raises(TypeError):
         payments_module.confirm_payment_and_complete_sale(conn, payment_id=sale.payment.id)  # type: ignore[call-arg]
@@ -117,7 +117,7 @@ def test_confirm_is_idempotent(conn):
         conn,
         client_reference="mpesa-idem",
         lines=[{"product_id": product.id, "quantity_milli": 1_350}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     payment_id = sale.payment.id
     payments_module.confirm_payment_and_complete_sale(
@@ -143,7 +143,7 @@ def test_pending_mpesa_provider_is_daraja_identity(conn):
         conn,
         client_reference="mpesa-provider-id",
         lines=[{"product_id": product.id, "quantity_milli": 1_000}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     assert sale.payment.provider == "DARAJA"
     cash = sales_module.create_sale(
@@ -165,7 +165,7 @@ def test_public_api_has_no_force_confirm_endpoint(conn):
         conn,
         client_reference="api-no-force",
         lines=[{"product_id": product.id, "quantity_milli": 1_000}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     payment_id = sale.payment.id
 
@@ -203,13 +203,13 @@ def test_provider_receipt_uniqueness_across_payments(conn):
         conn,
         client_reference="uniq-a",
         lines=[{"product_id": product.id, "quantity_milli": 1_000}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     s2 = sales_module.create_sale(
         conn,
         client_reference="uniq-b",
         lines=[{"product_id": product.id, "quantity_milli": 1_000}],
-        payment_method="MPESA",
+        payment_method="MPESA", phone_number="0712345678",
     )
     payments_module.confirm_payment_and_complete_sale(
         conn,
