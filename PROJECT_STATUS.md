@@ -12,7 +12,7 @@ Labels used in this file:
 Documentation, empty folders, and architecture decisions do **not** make a
 feature IMPLEMENTED.
 
-Last updated: 2026-09-13 (Milestone 3.1 payment foundation — hardened)
+Last updated: 2026-09-13 (Milestone 3.3 payment reconciliation)
 
 ## Milestone 0 foundation
 
@@ -41,25 +41,35 @@ Last updated: 2026-09-13 (Milestone 3.1 payment foundation — hardened)
 
 | Item | Status |
 |---|---|
-| Payment provider abstraction (`PaymentProvider`, `CashProvider`) | IMPLEMENTED / TESTED |
-| Explicit pending MPESA provider identity `DARAJA` (no HTTP) | IMPLEMENTED / TESTED |
-| Cash remains `LOCAL_CASH` | IMPLEMENTED / TESTED |
-| Sale status `PENDING_PAYMENT`; payment status `PENDING` | IMPLEMENTED / TESTED |
-| Pending MPESA: **no stock deduction**, **no reservation**, **no receipt** | IMPLEMENTED / TESTED |
-| `confirm_payment_and_complete_sale` with **mandatory** `expected_amount_cents` | IMPLEMENTED / TESTED |
-| Amount mismatch leaves PENDING; audits conflict | IMPLEMENTED / TESTED |
-| Provider ref uniqueness (checkout / merchant / receipt) | IMPLEMENTED / TESTED |
-| No public force-confirm API; domain-only confirmation | IMPLEMENTED / TESTED |
-| Atomic confirm: stock + payment + sale + receipt | IMPLEMENTED / TESTED |
-| Idempotent duplicate confirmation | IMPLEMENTED / TESTED |
-| Insufficient-stock rollback on confirm | IMPLEMENTED / TESTED |
-| Safaricom Daraja / STK / callback | **NOT IMPLEMENTED** (M3.2) |
+| Payment provider abstraction; pending MPESA without stock/receipt | IMPLEMENTED / TESTED |
+| `confirm_payment_and_complete_sale` mandatory amount check | IMPLEMENTED / TESTED |
+| No public force-confirm API | IMPLEMENTED / TESTED |
+
+## Milestone 3.2 — Daraja STK + callback
+
+| Item | Status |
+|---|---|
+| OAuth + STK Push HTTP client | IMPLEMENTED / TESTED |
+| STK callback endpoint + correlation (checkout/merchant/phone) | IMPLEMENTED / TESTED |
+| Idempotent confirm; pending stock-neutral | IMPLEMENTED / TESTED |
+
+## Milestone 3.3 — payment reconciliation
+
+| Item | Status |
+|---|---|
+| STK Push Query client (`/mpesa/stkpushquery/v1/query`) | IMPLEMENTED / TESTED |
+| `reconciliation.reconcile_payment` domain service | IMPLEMENTED / TESTED |
+| Lost-callback recovery via provider query | IMPLEMENTED / TESTED |
+| Correlation on query (checkout/merchant/phone) | IMPLEMENTED / TESTED |
+| Terminal cancel (1032) / failure codes; ambiguous stays PENDING | IMPLEMENTED / TESTED |
+| Callback + reconcile race safe (one stock, one receipt) | IMPLEMENTED / TESTED |
+| Authenticated `POST /payments/{id}/reconcile` | IMPLEMENTED / TESTED |
+| Transaction Status API (initiator credentials) | **NOT IMPLEMENTED** |
 | eTIMS | **NOT IMPLEMENTED** |
 
 ## Explicit non-claims
 
-- No Daraja HTTP, STK Push, callbacks, or credentials in this repository
-- No eTIMS
-- No UI
-- No Docker requirement
-- No PostgreSQL / Redis / microservices
+- Not claimed production-ready without live Safaricom validation
+- No eTIMS, no UI, no Docker requirement
+- No PostgreSQL / Redis / Celery / microservices
+- No client force-confirm; confirmation only from trusted provider evidence
