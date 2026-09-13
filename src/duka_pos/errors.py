@@ -67,3 +67,56 @@ class EmptySale(DukaPosError):
 
 class InvalidSaleData(DukaPosError):
     """Raised when sale request data (e.g. client_reference) is invalid."""
+
+
+# ---------------------------------------------------------------------------
+# M2 errors
+# ---------------------------------------------------------------------------
+
+
+class AuthenticationError(DukaPosError):
+    """Raised when a request lacks valid authentication."""
+
+
+class InvalidCredentials(DukaPosError):
+    """Raised for failed login (generic message to avoid user enumeration)."""
+
+
+class DisabledUser(DukaPosError):
+    """Raised when an authenticated user account is disabled."""
+
+
+class PermissionDenied(DukaPosError):
+    """Raised when the authenticated user lacks the required role/permission."""
+
+
+class UserNotFound(DukaPosError):
+    """Raised when a user id does not exist."""
+
+
+class DuplicateUsername(DukaPosError):
+    """Raised when creating a user with an existing username."""
+
+
+class ShiftNotFound(DukaPosError):
+    """Raised when a shift id does not exist."""
+
+
+class ShiftAlreadyOpen(DukaPosError):
+    """Raised when a user already has an OPEN shift."""
+
+
+class NoOpenShift(DukaPosError):
+    """Raised when an operation requires an open shift but none exists."""
+
+
+class ShiftAlreadyClosed(DukaPosError):
+    """Raised when attempting to close an already-closed shift."""
+
+
+class SaleAlreadyReversed(DukaPosError):
+    """Raised when a sale has already been voided or returned."""
+
+
+class InvalidReversal(DukaPosError):
+    """Raised when a void/return request is invalid."""
