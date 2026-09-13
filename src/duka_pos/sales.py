@@ -111,6 +111,7 @@ def create_sale(
     lines: list[dict],
     payment_method: str = "CASH",
     user_id: int | None = None,
+    shift_id: int | None = None,
 ) -> Sale:
     """Create a sale atomically, or return the existing sale if the same
     client_reference was already submitted (idempotency).
@@ -125,15 +126,10 @@ def create_sale(
     if not lines:
         raise EmptySale("a sale must contain at least one line")
 
-    # Fast idempotency path: already-committed duplicate submissions never
-    # need to open a write transaction at all.
     existing_id = _find_sale_id_by_reference(conn, client_reference)
     if existing_id is not None:
         return get_sale(conn, existing_id)
 
-    # Validate line shape and quantities before opening the write
-    # transaction. Product existence/stock is checked inside the
-    # transaction so the stock check and the deduction are atomic.
     parsed_lines: list[tuple[int, int]] = []
     for i, raw_line in enumerate(lines):
         try:
@@ -168,8 +164,6 @@ def create_sale(
                     (product, quantity_milli, product.selling_price_cents, total_for_line)
                 )
 
-                # Deduct stock and record the movement now, inside the
-                # same transaction as the sale itself.
                 conn.execute(
                     """
                     UPDATE stock_balances
@@ -185,15 +179,13 @@ def create_sale(
                 cursor = conn.execute(
                     """
                     INSERT INTO sales (
-                        client_reference, status, subtotal_cents, total_cents, created_at
-                    ) VALUES (?, 'COMPLETED', ?, ?, ?)
+                        client_reference, status, subtotal_cents, total_cents, created_at,
+                        user_id, shift_id
+                    ) VALUES (?, 'COMPLETED', ?, ?, ?, ?, ?)
                     """,
-                    (client_reference, subtotal_cents, total_cents, now),
+                    (client_reference, subtotal_cents, total_cents, now, user_id, shift_id),
                 )
             except sqlite3.IntegrityError:
-                # Another call committed the same client_reference between
-                # our fast-path check and this insert. Abort this attempt;
-                # the caller falls back to the idempotent read below.
                 raise _DuplicateSaleReference() from None
 
             sale_id = cursor.lastrowid
@@ -250,7 +242,7 @@ def create_sale(
             )
     except _DuplicateSaleReference:
         existing_id = _find_sale_id_by_reference(conn, client_reference)
-        if existing_id is None:  # pragma: no cover - defensive, should not happen
+        if existing_id is None:
             raise
         return get_sale(conn, existing_id)
 
