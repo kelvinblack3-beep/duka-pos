@@ -109,17 +109,18 @@ LOGIN → CREATE/LOOKUP PRODUCT → ADD STOCK → SELL
   → VIEW SALE
 ```
 
-Later, if the tender is M-Pesa:
+Later, if the tender is M-Pesa (M3.1 local foundation; Daraja is M3.2):
 
 ```
-LOCAL SALE RECORD
-  → payment INITIATED / PENDING
-  → Daraja adapter
+LOCAL SALE RECORD (status=PENDING_PAYMENT)
+  → payment PENDING  (no stock deduction, no receipt)
+  → [M3.2] Daraja adapter outside SQLite transaction
   → callback / query
-  → local payment CONFIRMED | FAILED | …
+  → confirm_payment_and_complete_sale (atomic: CONFIRMED + stock + receipt + COMPLETED)
 ```
 
-The row in SQLite is created before any network call.
+Pending M-Pesa does **not** deduct stock. The local row is created before any network call.
+See [ADR-003](docs/decisions/ADR-003-payment-abstraction-and-pending-stock.md).
 
 eTIMS follows the same idea: local record, queue, submit, store KRA response,
 retry. Lack of KRA connectivity must not erase the shop sale.
