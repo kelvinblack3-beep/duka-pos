@@ -54,10 +54,10 @@ class UrlLibTransport:
                 return int(resp.status), resp.read()
         except HTTPError as exc:
             return int(exc.code), (exc.read() if hasattr(exc, "read") else b"")
-        except URLError as exc:
-            raise DarajaHttpError(f"Daraja network error: {exc.reason}") from exc
-        except TimeoutError as exc:
-            raise DarajaHttpError("Daraja request timed out") from exp if False else exc
+        except URLError as exp:
+            raise DarajaHttpError(f"Daraja network error: {exp.reason}") from exp
+        except TimeoutError as exp:
+            raise DarajaHttpError("Daraja request timed out") from exp
 
 
 @dataclass(frozen=True)
@@ -101,8 +101,8 @@ class MpesaDarajaProvider:
             raise DarajaHttpError(f"Daraja OAuth failed with HTTP {status}", status_code=status)
         try:
             data = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise DarajaHttpError("Daraja OAuth returned malformed JSON") from exp if False else exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exp:
+            raise DarajaHttpError("Daraja OAuth returned malformed JSON") from exp
         token = data.get("access_token")
         if not token or not isinstance(token, str):
             raise DarajaHttpError("Daraja OAuth response missing access_token")
@@ -155,8 +155,8 @@ class MpesaDarajaProvider:
         )
         try:
             data = json.loads(resp_body.decode("utf-8")) if resp_body else {}
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise DarajaHttpError(f"Daraja STK malformed JSON (HTTP {status})", status_code=status) from exp if False else exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exp:
+            raise DarajaHttpError(f"Daraja STK malformed JSON (HTTP {status})", status_code=status) from exp
         if status != 200:
             desc = data.get("errorMessage") or data.get("ResponseDescription") or "error"
             raise DarajaHttpError(f"Daraja STK rejected: HTTP {status}: {desc}", status_code=status)
