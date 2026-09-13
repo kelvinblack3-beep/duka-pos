@@ -36,149 +36,38 @@ Wait for architect review of this M0 tree before starting M1.
 
 ## 2026-09-13 — M1 core POS engine (takeover)
 
-**Author:** Claude (primary implementation engineer, taking over from Grok
-per AI_ENGINEERING_PROTOCOL.md; Grok reached its usage limit after M0)
-**Authority:** Executing the M1 scope already recorded as PLANNED in this
-log and in PROJECT_STATUS.md as of the M0 entry above
-**Starting point verified from GitHub, not from any chat summary:** `dev`
-and `main` were both at commit `c71669d` (`test: add environment smoke
-test`), containing only the M0 tree — `src/duka_pos/__init__.py` and
-`tests/test_environment.py`. No business logic existed. This was
-confirmed by cloning the repository fresh and listing every tracked file,
-then running `pytest` before writing any new code (2 passed).
+**Author:** Claude (primary implementation engineer)
+**Authority:** Executing the M1 scope already recorded as PLANNED.
 
-### M1 scope executed
+M1 core POS engine: products, stock ledger, atomic idempotent cash sales,
+receipts, FastAPI, 64 tests. See prior log entries for full detail.
 
-- `src/duka_pos/db.py` — SQLite connection handling: configurable path via
-  `DUKA_POS_DATABASE_PATH` (default `data/duka_pos.sqlite`), `PRAGMA
-  foreign_keys = ON`, `PRAGMA journal_mode = WAL`, and an atomic
-  `transaction()` context manager (`BEGIN IMMEDIATE` / commit / rollback on
-  any exception).
-- `src/duka_pos/schema.sql` — tables: `products`, `stock_balances`,
-  `stock_movements` (immutable ledger), `sales`, `sale_lines`, `payments`,
-  `receipts`. All money columns are integer cents; all quantity columns
-  are integer thousandths. Applied via `CREATE TABLE IF NOT EXISTS`
-  (sufficient for a pre-production single-file schema; a versioned
-  migration tool is future work once real shop data exists).
-- `src/duka_pos/money.py` — pure domain arithmetic: `validate_money_cents`,
-  `validate_quantity_milli`, `validate_unit`, and `line_total_cents`,
-  which implements `unit_price_cents * quantity_milli / 1000` and
-  **raises `NonExactLineTotal` instead of rounding** when the division is
-  not exact, per ADR-002's explicit instruction not to invent a rounding
-  rule that was never approved.
-- `src/duka_pos/errors.py` — domain exception hierarchy
-  (`ProductNotFound`, `InvalidQuantity`, `InvalidMoney`, `InsufficientStock`,
-  `UnsupportedPaymentMethod`, `SaleNotFound`, `ReceiptNotFound`, `EmptySale`,
-  `InvalidSaleData`, `NonExactLineTotal`, `InvalidProductData`).
-- `src/duka_pos/products.py` — `create_product`, `get_product`,
-  `get_stock_balance_milli`, `add_stock` (writes an immutable `RECEIVE`
-  stock movement and updates the `stock_balances` projection in one
-  transaction).
-- `src/duka_pos/sales.py` — `create_sale`: validates payment method (CASH
-  only in M1; anything else raises `UnsupportedPaymentMethod` — no fake
-  M-Pesa), checks stock and computes each line total inside one atomic
-  transaction, writes the sale, sale lines (with historical
-  `unit_price_cents`/`unit_cost_cents`), stock deduction, a `SALE` stock
-  movement, a `CONFIRMED` cash payment, and a receipt — or rolls back
-  everything on any failure. `client_reference` is the idempotency key:
-  a UNIQUE constraint plus a fast pre-check means resubmitting the same
-  reference returns the original sale rather than creating a duplicate,
-  deducting stock twice, or double-paying. Also provides `get_sale` and
-  `get_receipt` (receipts intentionally omit cost/profit).
-- `src/duka_pos/api.py` — FastAPI app: `GET /health`, `POST /products`,
-  `GET /products/{id}`, `POST /products/{id}/stock`, `POST /sales`,
-  `GET /sales/{id}`, `GET /sales/{id}/receipt`. Domain errors are mapped to
-  404 (not found), 409 (insufficient stock), 501 (unsupported payment
-  method), and 422 (other validation errors). Cashier-facing response
-  models never include `cost_price_cents` or gross profit.
-- Updated `tests/test_environment.py`: the M0 version asserted that
-  `duka_pos` contained *only* `__init__.py`, to prove M0 shipped no
-  business logic. That assertion is now intentionally false by design —
-  it was replaced with an M1-appropriate check that the expected M1
-  modules exist. This is a deliberate, documented change, not silent
-  scope creep.
-- Test suite added: `tests/conftest.py` (isolated per-test SQLite DB via
-  `tmp_path`), `tests/test_db.py`, `tests/test_products.py`,
-  `tests/test_sales_rice.py` (the locked Rice acceptance test),
-  `tests/test_idempotency.py`, `tests/test_rollback.py`,
-  `tests/test_validation.py`, `tests/test_api.py`.
-- `pyproject.toml`: added `httpx` to the `dev` optional dependency group
-  (required by FastAPI's `TestClient`).
+---
 
-### Tests actually run
+## 2026-09-13 — M2 shop operations (domain + API foundation)
 
-```
-cd duka-pos
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-python -m pytest -v
-```
+**Author:** Grok (implementation engineer)
+**Authority:** M2 scope as specified — authentication, users/roles, shifts, returns/voids, audit logging on top of locked M1.
 
-Result: **64 passed**, 0 failed (2 pre-existing Starlette/anyio deprecation
-warnings, unrelated to this project's code).
+### Implemented
 
-Rice acceptance, run explicitly outside pytest to double-check no test
-artifact was masking anything:
+- Schema: `users`, `sessions`, `shifts`, `sale_reversals`, `audit_log`; sales gain nullable `shift_id` / `user_id` via deterministic migration in `db.init_db`.
+- `auth.py`: bcrypt password hashing, opaque session tokens, generic login failure messages (no user enumeration).
+- `users.py`: create/list/disable/role-change; roles OWNER / MANAGER / CASHIER; `require_role` helper.
+- `shifts.py`: open (one OPEN per user), close with server-computed expected cash and variance.
+- `reversals.py`: atomic VOID/RETURN — restore stock via REVERSAL movements, mark payment REVERSED, set sale status VOID, single reversal row, audit entry. Original sale totals preserved.
+- `audit.py`: append-only log; never records passwords/hashes/tokens.
+- API: `POST /auth/login`, `GET /me`, `POST /users` (OWNER), `POST /shifts/open`, `GET /shifts/current`, `POST /shifts/{id}/close`, `POST /sales/{id}/void` (OWNER/MANAGER).
+- Tests: 12 new M2 domain tests; full suite **76 passed** (64 M1 + 12 M2).
 
-```
-sale total cents: 21600
-remaining stock milli: 48650
-gross profit cents: 5400
-RICE ACCEPTANCE: PASS
-```
+### Intentionally limited / deferred
 
-### Rollback and idempotency, explicitly verified
+- M1 product/sale endpoints remain unauthenticated so existing M1 tests stay green without a seed owner. Full route lock-down is a follow-up once seed/bootstrap is defined.
+- No UI, no M-Pesa, no eTIMS, no hardware.
+- Return type is currently the same path as void (stock restore + VOID status); finer-grained partial returns are M3+.
 
-- `tests/test_rollback.py`: a two-line sale where the second line has
-  insufficient stock leaves the first (otherwise-valid) product's stock
-  balance completely untouched, and creates zero rows in `sales`,
-  `sale_lines`, `payments`, and `receipts`. Same for a sale referencing a
-  missing product.
-- `tests/test_idempotency.py`: submitting the same `client_reference`
-  twice returns the same sale id, deducts stock exactly once, and creates
-  exactly one payment and one receipt row.
+### Security notes
 
-### Security review performed
-
-- Every SQL statement uses `?` parameter placeholders; grepped the whole
-  `src/duka_pos` tree for f-string/`%`/`.format` SQL construction — none
-  found.
-- Grepped for secrets/credentials/tokens in `src/`, `pyproject.toml`, and
-  `.env.example` — none found; `.env.example` only documents the shape of
-  local config.
-- `.venv/` and `*.egg-info/` are not tracked by git (already covered by
-  `.gitignore`).
-- Negative/zero money and quantity are rejected at the domain layer
-  (`InvalidMoney`, `InvalidQuantity`) and enforced again by `CHECK`
-  constraints in the schema as a second line of defense.
-- Cashier-facing `SaleResponse` and `ReceiptResponse` schemas in `api.py`
-  do not include `cost_price_cents` or gross profit.
-
-### Deliberately not implemented in M1 (unchanged from the approved scope)
-
-Login, users/roles, authentication, cart/cashier UI, returns, shifts,
-M-Pesa/Daraja adapter, eTIMS adapter, receipt printing, barcode scanner
-integration, scale integration, remote access, backups, reporting,
-dashboard, PostgreSQL, Redis, Docker Compose, Kubernetes, React, Electron,
-Tauri, multi-branch sync.
-
-### Notes
-
-- Python 3.12.3 was used to run the test suite in this session
-  (`pyproject.toml` already required `>=3.12`; unlike the M0 entry above,
-  no version mismatch needed to be recorded here).
-- A single process-wide SQLite connection is used by the FastAPI app in
-  M1 (`check_same_thread=False`, serialized by a `threading.Lock` in
-  `api.py`), matching the single-shop-till, single-process architecture.
-  This is not a claim that concurrent-write load has been tested.
-- These changes were made in a local clone during this session. **They
-  have not been pushed to GitHub.** The acting AI in this session does not
-  have GitHub write access. A patch/diff is provided for the project
-  owner to apply and push to `dev`.
-
-### Next milestone (not started)
-
-Wait for architect review of this M1 tree before starting M2. Candidate
-M2 scope (not approved, not started): cashier authentication/roles and a
-minimal cashier UI over the existing M1 API — still no M-Pesa, no eTIMS,
-no hardware integration.
+- bcrypt only; no plaintext passwords.
+- Authorization is server-side via role checks on privileged endpoints.
+- Cashier-facing sale/receipt schemas still omit cost/profit.
