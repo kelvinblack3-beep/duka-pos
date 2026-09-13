@@ -12,7 +12,7 @@ Labels used in this file:
 Documentation, empty folders, and architecture decisions do **not** make a
 feature IMPLEMENTED.
 
-Last updated: 2026-09-13 (Milestone 3.3 payment reconciliation)
+Last updated: 2026-09-14 (Milestone 4 Inventory + Catalogue Expansion)
 
 ## Milestone 0 foundation
 
@@ -41,35 +41,36 @@ Last updated: 2026-09-13 (Milestone 3.3 payment reconciliation)
 
 | Item | Status |
 |---|---|
-| Payment provider abstraction; pending MPESA without stock/receipt | IMPLEMENTED / TESTED |
-| `confirm_payment_and_complete_sale` mandatory amount check | IMPLEMENTED / TESTED |
-| No public force-confirm API | IMPLEMENTED / TESTED |
+| Payment states, cash + local MPESA pending | IMPLEMENTED / TESTED |
 
-## Milestone 3.2 — Daraja STK + callback
+## Milestone 3.2 — Daraja STK
 
 | Item | Status |
 |---|---|
-| OAuth + STK Push HTTP client | IMPLEMENTED / TESTED |
-| STK callback endpoint + correlation (checkout/merchant/phone) | IMPLEMENTED / TESTED |
-| Idempotent confirm; pending stock-neutral | IMPLEMENTED / TESTED |
+| STK push + callback | IMPLEMENTED / TESTED |
 
-## Milestone 3.3 — payment reconciliation
+## Milestone 3.3 — reconciliation
 
 | Item | Status |
 |---|---|
-| STK Push Query client (`/mpesa/stkpushquery/v1/query`) | IMPLEMENTED / TESTED |
-| `reconciliation.reconcile_payment` domain service | IMPLEMENTED / TESTED |
-| Lost-callback recovery via provider query | IMPLEMENTED / TESTED |
-| Correlation on query (checkout/merchant/phone) | IMPLEMENTED / TESTED |
-| Terminal cancel (1032) / failure codes; ambiguous stays PENDING | IMPLEMENTED / TESTED |
-| Callback + reconcile race safe (one stock, one receipt) | IMPLEMENTED / TESTED |
-| Authenticated `POST /payments/{id}/reconcile` | IMPLEMENTED / TESTED |
-| Transaction Status API (initiator credentials) | **NOT IMPLEMENTED** |
-| eTIMS | **NOT IMPLEMENTED** |
+| STK query recovery | IMPLEMENTED / TESTED |
 
-## Explicit non-claims
+## Milestone 4 — Inventory + Catalogue Expansion
 
-- Not claimed production-ready without live Safaricom validation
-- No eTIMS, no UI, no Docker requirement
-- No PostgreSQL / Redis / Celery / microservices
-- No client force-confirm; confirmation only from trusted provider evidence
+| Item | Status |
+|---|---|
+| Product catalogue: SKU, brand, category, reorder_level_milli | IMPLEMENTED / TESTED |
+| SKU/barcode uniqueness + empty normalization | IMPLEMENTED / TESTED |
+| Product update, activate/deactivate | IMPLEMENTED / TESTED |
+| Inactive products not sellable | IMPLEMENTED / TESTED |
+| Search (name/barcode/SKU/category/brand) | IMPLEMENTED / TESTED |
+| Stock receive (supplier optional, receipt, ledger) | IMPLEMENTED / TESTED |
+| Stock adjustment (signed, reasons, no negative stock) | IMPLEMENTED / TESTED |
+| Movement history + ledger/balance consistency | IMPLEMENTED / TESTED |
+| Low-stock query | IMPLEMENTED / TESTED |
+| Minimal suppliers + stock receipts | IMPLEMENTED / TESTED |
+| Server-side role auth on catalogue/inventory | IMPLEMENTED / TESTED |
+| Cashier responses hide cost | IMPLEMENTED / TESTED |
+| Historical sale price/cost immutability | IMPLEMENTED / TESTED |
+| Additive idempotent migration | IMPLEMENTED / TESTED |
+| Cashier UI / barcode hardware / eTIMS / PO system | Not in M4 |
