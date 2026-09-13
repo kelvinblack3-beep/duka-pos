@@ -99,3 +99,64 @@ CREATE TABLE IF NOT EXISTS receipts (
     receipt_number   TEXT NOT NULL UNIQUE,
     created_at       TEXT NOT NULL
 );
+
+-- ---------------------------------------------------------------------------
+-- M2: Shop operations (users, sessions, shifts, reversals, audit)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('OWNER', 'MANAGER', 'CASHIER')),
+    active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token           TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users (id),
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS shifts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users (id),
+    opened_at           TEXT NOT NULL,
+    closed_at           TEXT,
+    opening_cash_cents  INTEGER NOT NULL CHECK (opening_cash_cents >= 0),
+    closing_cash_cents  INTEGER CHECK (closing_cash_cents IS NULL OR closing_cash_cents >= 0),
+    expected_cash_cents INTEGER,
+    variance_cents      INTEGER,
+    status              TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_shifts_user ON shifts (user_id);
+CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts (status);
+
+CREATE TABLE IF NOT EXISTS sale_reversals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id         INTEGER NOT NULL UNIQUE REFERENCES sales (id),
+    reversal_type   TEXT NOT NULL CHECK (reversal_type IN ('VOID', 'RETURN')),
+    reason          TEXT,
+    performed_by    INTEGER NOT NULL REFERENCES users (id),
+    performed_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at     TEXT NOT NULL,
+    user_id         INTEGER REFERENCES users (id),
+    action          TEXT NOT NULL,
+    entity_type     TEXT,
+    entity_id       INTEGER,
+    details         TEXT,
+    client_reference TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_log (occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id);
