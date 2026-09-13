@@ -1,13 +1,45 @@
-# M-Pesa (Safaricom Daraja)
+# M-Pesa (Safaricom Daraja) — M3.2
 
-Status: **PLANNED**
+Status: **IMPLEMENTED** (sandbox-oriented HTTP client + callback). Not claimed production-ready without live Safaricom validation.
 
-- Will use official Safaricom Daraja APIs.
-- Credentials will live in local environment configuration, never in git
-  and never in frontend code.
-- Payment states (planned): INITIATED, PENDING, CONFIRMED, FAILED,
-  CANCELLED, REVERSED, REFUNDED.
-- Sandbox first. A passing sandbox test is not production-ready.
+## What is implemented
 
-This folder has no adapter code and no credentials. Do not add a fake
-M-Pesa implementation that is described as the real integration.
+- OAuth client-credentials (`GET /oauth/v1/generate?grant_type=client_credentials`)
+- STK Push / Lipa Na M-Pesa Online (`POST /mpesa/stkpush/v1/processrequest`)
+- STK result callback (`POST /callbacks/daraja/stk`)
+- Phone normalization to `2547…` / `2541…`
+- Provider refs: `MerchantRequestID`, `CheckoutRequestID`, `MpesaReceiptNumber`
+- Idempotent callbacks via existing M3.1 `confirm_payment_and_complete_sale`
+
+## What is not implemented
+
+- Live production cut-over validation
+- STK query polling reconciliation UI
+- C2B register URL / B2C / B2B
+- eTIMS
+
+## Configuration (env only)
+
+See `.env.example`:
+
+| Variable | Purpose |
+|---|---|
+| `DARAJA_ENVIRONMENT` | `sandbox` or `production` |
+| `DARAJA_CONSUMER_KEY` | App consumer key |
+| `DARAJA_CONSUMER_SECRET` | App consumer secret |
+| `DARAJA_SHORTCODE` | Paybill / till shortcode |
+| `DARAJA_PASSKEY` | Lipa Na M-Pesa Online passkey |
+| `DARAJA_CALLBACK_URL` | Public HTTPS URL for STK results |
+| `DARAJA_TIMEOUT_SECONDS` | Optional HTTP timeout (default 30) |
+
+Never commit real credentials. Tokens are process-local only and never logged.
+
+## Flow
+
+1. `POST /sales` with `payment_method=MPESA` and `phone_number`
+2. Local SQLite creates `PENDING_PAYMENT` / `PENDING` (no stock, no receipt)
+3. **After commit**, STK HTTP runs; Checkout/Merchant IDs stored
+4. Daraja later POSTs to `/callbacks/daraja/stk`
+5. Success → atomic confirm (amount check, stock, receipt, COMPLETED)
+
+STK acceptance ≠ payment success.
