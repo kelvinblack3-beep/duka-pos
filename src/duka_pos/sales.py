@@ -1,0 +1,350 @@
+"""Sale, payment, and receipt domain logic.
+
+Sale finalization is a single atomic SQLite transaction: sale, sale lines,
+stock movements, the stock balance projection update, the payment, and the
+receipt are all written together, or none of them are (see db.transaction).
+
+Idempotency: `client_reference` is a UNIQUE column on `sales`. Submitting
+the same client_reference twice returns the original sale instead of
+creating a second one, deducting stock twice, or recording a second
+payment.
+
+No network calls happen anywhere in this module.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from duka_pos import db as db_module
+from duka_pos import products as products_module
+from duka_pos.errors import (
+    EmptySale,
+    InsufficientStock,
+    InvalidSaleData,
+    ReceiptNotFound,
+    SaleNotFound,
+    UnsupportedPaymentMethod,
+)
+from duka_pos.money import line_total_cents, validate_quantity_milli
+
+#: M1 supports CASH only. Other methods are modelled in the schema for
+#: future real adapters but are rejected here — no fake M-Pesa/card.
+SUPPORTED_PAYMENT_METHODS = frozenset({"CASH"})
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class SaleLineResult:
+    product_id: int
+    product_name: str
+    quantity_milli: int
+    unit_price_cents: int
+    unit_cost_cents: int
+    line_total_cents: int
+
+
+@dataclass(frozen=True)
+class PaymentResult:
+    method: str
+    status: str
+    amount_cents: int
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Sale:
+    id: int
+    client_reference: str
+    status: str
+    subtotal_cents: int
+    total_cents: int
+    created_at: str
+    lines: list[SaleLineResult] = field(default_factory=list)
+    payment: PaymentResult | None = None
+
+    @property
+    def gross_profit_cents(self) -> int:
+        """Owner/manager-only figure. Never expose via cashier-facing API."""
+        return sum(
+            (line.unit_price_cents - line.unit_cost_cents) * line.quantity_milli // 1000
+            for line in self.lines
+        )
+
+
+@dataclass(frozen=True)
+class ReceiptLine:
+    product_name: str
+    quantity_milli: int
+    unit_price_cents: int
+    line_total_cents: int
+
+
+@dataclass(frozen=True)
+class Receipt:
+    sale_id: int
+    receipt_number: str
+    created_at: str
+    lines: list[ReceiptLine]
+    subtotal_cents: int
+    total_cents: int
+    payment_method: str
+    payment_status: str
+
+
+def _find_sale_id_by_reference(conn: sqlite3.Connection, client_reference: str) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM sales WHERE client_reference = ?", (client_reference,)
+    ).fetchone()
+    return row["id"] if row is not None else None
+
+
+def create_sale(
+    conn: sqlite3.Connection,
+    *,
+    client_reference: str,
+    lines: list[dict],
+    payment_method: str = "CASH",
+    user_id: int | None = None,
+) -> Sale:
+    """Create a sale atomically, or return the existing sale if the same
+    client_reference was already submitted (idempotency).
+    """
+    if not isinstance(client_reference, str) or not client_reference.strip():
+        raise InvalidSaleData("client_reference must be a non-empty string")
+    if payment_method not in SUPPORTED_PAYMENT_METHODS:
+        raise UnsupportedPaymentMethod(
+            f"payment method {payment_method!r} is not implemented in M1; "
+            f"supported methods: {sorted(SUPPORTED_PAYMENT_METHODS)}"
+        )
+    if not lines:
+        raise EmptySale("a sale must contain at least one line")
+
+    # Fast idempotency path: already-committed duplicate submissions never
+    # need to open a write transaction at all.
+    existing_id = _find_sale_id_by_reference(conn, client_reference)
+    if existing_id is not None:
+        return get_sale(conn, existing_id)
+
+    # Validate line shape and quantities before opening the write
+    # transaction. Product existence/stock is checked inside the
+    # transaction so the stock check and the deduction are atomic.
+    parsed_lines: list[tuple[int, int]] = []
+    for i, raw_line in enumerate(lines):
+        try:
+            product_id = raw_line["product_id"]
+            quantity_milli = raw_line["quantity_milli"]
+        except (KeyError, TypeError) as exc:
+            raise InvalidSaleData(
+                f"lines[{i}] must be a mapping with product_id and quantity_milli"
+            ) from exc
+        validate_quantity_milli(quantity_milli, field=f"lines[{i}].quantity_milli")
+        parsed_lines.append((product_id, quantity_milli))
+
+    now = _now_iso()
+
+    try:
+        with db_module.transaction(conn):
+            line_results: list[tuple] = []
+            subtotal_cents = 0
+
+            for product_id, quantity_milli in parsed_lines:
+                product = products_module.get_product(conn, product_id)
+                balance = products_module.get_stock_balance_milli(conn, product_id)
+                if quantity_milli > balance:
+                    raise InsufficientStock(
+                        f"product {product_id} ({product.name}) has {balance} milli-units "
+                        f"in stock; sale requests {quantity_milli}"
+                    )
+
+                total_for_line = line_total_cents(product.selling_price_cents, quantity_milli)
+                subtotal_cents += total_for_line
+                line_results.append(
+                    (product, quantity_milli, product.selling_price_cents, total_for_line)
+                )
+
+                # Deduct stock and record the movement now, inside the
+                # same transaction as the sale itself.
+                conn.execute(
+                    """
+                    UPDATE stock_balances
+                    SET quantity_milli = quantity_milli - ?
+                    WHERE product_id = ?
+                    """,
+                    (quantity_milli, product_id),
+                )
+
+            total_cents = subtotal_cents
+
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO sales (
+                        client_reference, status, subtotal_cents, total_cents, created_at
+                    ) VALUES (?, 'COMPLETED', ?, ?, ?)
+                    """,
+                    (client_reference, subtotal_cents, total_cents, now),
+                )
+            except sqlite3.IntegrityError:
+                # Another call committed the same client_reference between
+                # our fast-path check and this insert. Abort this attempt;
+                # the caller falls back to the idempotent read below.
+                raise _DuplicateSaleReference() from None
+
+            sale_id = cursor.lastrowid
+
+            for product, quantity_milli, unit_price_cents, line_total in line_results:
+                conn.execute(
+                    """
+                    INSERT INTO sale_lines (
+                        sale_id, product_id, quantity_milli, unit_price_cents,
+                        unit_cost_cents, line_total_cents
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sale_id,
+                        product.id,
+                        quantity_milli,
+                        unit_price_cents,
+                        product.cost_price_cents,
+                        line_total,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO stock_movements (
+                        product_id, movement_type, quantity_milli, unit_cost_cents,
+                        reference_type, reference_id, occurred_at, user_id
+                    ) VALUES (?, 'SALE', ?, ?, 'SALE', ?, ?, ?)
+                    """,
+                    (
+                        product.id,
+                        -quantity_milli,
+                        product.cost_price_cents,
+                        sale_id,
+                        now,
+                        user_id,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO payments (sale_id, method, status, amount_cents, created_at)
+                VALUES (?, 'CASH', 'CONFIRMED', ?, ?)
+                """,
+                (sale_id, total_cents, now),
+            )
+
+            receipt_number = f"RCPT-{sale_id:08d}"
+            conn.execute(
+                """
+                INSERT INTO receipts (sale_id, receipt_number, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (sale_id, receipt_number, now),
+            )
+    except _DuplicateSaleReference:
+        existing_id = _find_sale_id_by_reference(conn, client_reference)
+        if existing_id is None:  # pragma: no cover - defensive, should not happen
+            raise
+        return get_sale(conn, existing_id)
+
+    return get_sale(conn, sale_id)
+
+
+class _DuplicateSaleReference(Exception):
+    """Internal control-flow signal only; never raised to callers."""
+
+
+def get_sale(conn: sqlite3.Connection, sale_id: int) -> Sale:
+    sale_row = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+    if sale_row is None:
+        raise SaleNotFound(f"sale {sale_id} not found")
+
+    line_rows = conn.execute(
+        """
+        SELECT sl.*, p.name AS product_name
+        FROM sale_lines sl
+        JOIN products p ON p.id = sl.product_id
+        WHERE sl.sale_id = ?
+        ORDER BY sl.id
+        """,
+        (sale_id,),
+    ).fetchall()
+    lines = [
+        SaleLineResult(
+            product_id=row["product_id"],
+            product_name=row["product_name"],
+            quantity_milli=row["quantity_milli"],
+            unit_price_cents=row["unit_price_cents"],
+            unit_cost_cents=row["unit_cost_cents"],
+            line_total_cents=row["line_total_cents"],
+        )
+        for row in line_rows
+    ]
+
+    payment_row = conn.execute(
+        "SELECT * FROM payments WHERE sale_id = ? ORDER BY id DESC LIMIT 1",
+        (sale_id,),
+    ).fetchone()
+    payment = (
+        PaymentResult(
+            method=payment_row["method"],
+            status=payment_row["status"],
+            amount_cents=payment_row["amount_cents"],
+            created_at=payment_row["created_at"],
+        )
+        if payment_row is not None
+        else None
+    )
+
+    return Sale(
+        id=sale_row["id"],
+        client_reference=sale_row["client_reference"],
+        status=sale_row["status"],
+        subtotal_cents=sale_row["subtotal_cents"],
+        total_cents=sale_row["total_cents"],
+        created_at=sale_row["created_at"],
+        lines=lines,
+        payment=payment,
+    )
+
+
+def get_receipt(conn: sqlite3.Connection, sale_id: int) -> Receipt:
+    """Retrieve the cashier-facing receipt for a sale.
+
+    Deliberately omits unit_cost_cents and gross profit: receipts are
+    customer-facing, and cost/profit must not leak through them.
+    """
+    receipt_row = conn.execute(
+        "SELECT * FROM receipts WHERE sale_id = ?", (sale_id,)
+    ).fetchone()
+    if receipt_row is None:
+        raise ReceiptNotFound(f"receipt for sale {sale_id} not found")
+
+    sale = get_sale(conn, sale_id)
+    lines = [
+        ReceiptLine(
+            product_name=line.product_name,
+            quantity_milli=line.quantity_milli,
+            unit_price_cents=line.unit_price_cents,
+            line_total_cents=line.line_total_cents,
+        )
+        for line in sale.lines
+    ]
+    payment = sale.payment
+    return Receipt(
+        sale_id=sale.id,
+        receipt_number=receipt_row["receipt_number"],
+        created_at=receipt_row["created_at"],
+        lines=lines,
+        subtotal_cents=sale.subtotal_cents,
+        total_cents=sale.total_cents,
+        payment_method=payment.method if payment else "UNKNOWN",
+        payment_status=payment.status if payment else "UNKNOWN",
+    )
