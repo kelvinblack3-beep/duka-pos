@@ -1,8 +1,7 @@
-"""FastAPI HTTP boundary for Duka POS M1/M2/M3.1.
+"""FastAPI HTTP boundary for Duka POS M1/M2/M3.1/M3.2.
 
 This layer only validates input shape, maps to domain calls, and maps
-domain errors to HTTP status codes. No business rules live here — they
-live in products.py / sales.py / money.py / auth.py / shifts.py.
+domain errors to HTTP status codes. No business rules live here.
 
 Cashier-facing responses never include cost_price_cents or gross profit.
 """
@@ -20,6 +19,9 @@ from duka_pos import audit as audit_module
 from duka_pos import auth as auth_module
 from duka_pos import db as db_module
 from duka_pos import payments as payments_module
+from duka_pos import mpesa_flow as mpesa_flow_module
+from duka_pos.daraja_config import DarajaConfigError, load_daraja_config_from_env
+from duka_pos.providers.mpesa_daraja import DarajaHttpError, MpesaDarajaProvider
 from duka_pos import products as products_module
 from duka_pos import reversals as reversals_module
 from duka_pos import sales as sales_module
@@ -182,11 +184,8 @@ def create_product(
 ) -> ProductResponse:
     try:
         product = products_module.create_product(
-            conn,
-            name=body.name,
-            unit=body.unit,
-            cost_price_cents=body.cost_price_cents,
-            selling_price_cents=body.selling_price_cents,
+            conn, name=body.name, unit=body.unit,
+            cost_price_cents=body.cost_price_cents, selling_price_cents=body.selling_price_cents,
             barcode=body.barcode,
         )
         balance = products_module.get_stock_balance_milli(conn, product.id)
@@ -209,17 +208,12 @@ def get_product(
 
 @app.post("/products/{product_id}/stock", response_model=StockAddResponse)
 def add_stock(
-    product_id: int,
-    body: StockAddRequest,
-    conn: sqlite3.Connection = Depends(get_connection),
+    product_id: int, body: StockAddRequest, conn: sqlite3.Connection = Depends(get_connection),
 ) -> StockAddResponse:
     try:
         new_balance = products_module.add_stock(
-            conn,
-            product_id=product_id,
-            quantity_milli=body.quantity_milli,
-            unit_cost_cents=body.unit_cost_cents,
-            reference_type=body.reference_type,
+            conn, product_id=product_id, quantity_milli=body.quantity_milli,
+            unit_cost_cents=body.unit_cost_cents, reference_type=body.reference_type,
             reference_id=body.reference_id,
         )
     except DukaPosError as exc:
@@ -233,13 +227,27 @@ def create_sale(
 ) -> SaleResponse:
     try:
         sale = sales_module.create_sale(
-            conn,
-            client_reference=body.client_reference,
+            conn, client_reference=body.client_reference,
             lines=[line.model_dump() for line in body.lines],
-            payment_method=body.payment_method,
-            phone_number=body.phone_number,
+            payment_method=body.payment_method, phone_number=body.phone_number,
             client_payment_reference=body.client_payment_reference,
         )
+        if body.payment_method == "MPESA" and sale.payment is not None:
+            try:
+                cfg = load_daraja_config_from_env()
+                provider = MpesaDarajaProvider(config=cfg)
+                mpesa_flow_module.initiate_stk_for_payment(
+                    conn, payment_id=sale.payment.id, provider=provider
+                )
+                sale = sales_module.get_sale(conn, sale.id)
+            except (DarajaConfigError, DarajaHttpError):
+                try:
+                    mpesa_flow_module.mark_stk_initiation_failed(
+                        conn, payment_id=sale.payment.id, error_message="stk_unavailable"
+                    )
+                except Exception:
+                    pass
+                sale = sales_module.get_sale(conn, sale.id)
     except DukaPosError as exc:
         raise _handle_domain_error(exc) from exc
     return _sale_to_response(sale)
@@ -263,56 +271,30 @@ def get_receipt(
     except DukaPosError as exp:
         raise _handle_domain_error(exp) from exp
     return ReceiptResponse(
-        sale_id=receipt.sale_id,
-        receipt_number=receipt.receipt_number,
-        created_at=receipt.created_at,
-        lines=[
-            ReceiptLineResponse(
-                product_name=line.product_name,
-                quantity_milli=line.quantity_milli,
-                unit_price_cents=line.unit_price_cents,
-                line_total_cents=line.line_total_cents,
-            )
-            for line in receipt.lines
-        ],
-        subtotal_cents=receipt.subtotal_cents,
-        total_cents=receipt.total_cents,
-        payment_method=receipt.payment_method,
-        payment_status=receipt.payment_status,
+        sale_id=receipt.sale_id, receipt_number=receipt.receipt_number, created_at=receipt.created_at,
+        lines=[ReceiptLineResponse(product_name=line.product_name, quantity_milli=line.quantity_milli,
+                                   unit_price_cents=line.unit_price_cents, line_total_cents=line.line_total_cents)
+               for line in receipt.lines],
+        subtotal_cents=receipt.subtotal_cents, total_cents=receipt.total_cents,
+        payment_method=receipt.payment_method, payment_status=receipt.payment_status,
     )
 
 
 def _sale_to_response(sale: sales_module.Sale) -> SaleResponse:
     return SaleResponse(
-        id=sale.id,
-        client_reference=sale.client_reference,
-        status=sale.status,
-        subtotal_cents=sale.subtotal_cents,
-        total_cents=sale.total_cents,
-        created_at=sale.created_at,
-        lines=[
-            SaleLineResponse(
-                product_id=line.product_id,
-                product_name=line.product_name,
-                quantity_milli=line.quantity_milli,
-                unit_price_cents=line.unit_price_cents,
-                line_total_cents=line.line_total_cents,
-            )
-            for line in sale.lines
-        ],
+        id=sale.id, client_reference=sale.client_reference, status=sale.status,
+        subtotal_cents=sale.subtotal_cents, total_cents=sale.total_cents, created_at=sale.created_at,
+        lines=[SaleLineResponse(product_id=line.product_id, product_name=line.product_name,
+                                quantity_milli=line.quantity_milli, unit_price_cents=line.unit_price_cents,
+                                line_total_cents=line.line_total_cents) for line in sale.lines],
         payment=(
             PaymentResponse(
-                id=sale.payment.id,
-                method=sale.payment.method,
-                status=sale.payment.status,
-                amount_cents=sale.payment.amount_cents,
-                provider=sale.payment.provider,
+                id=sale.payment.id, method=sale.payment.method, status=sale.payment.status,
+                amount_cents=sale.payment.amount_cents, provider=sale.payment.provider,
                 provider_checkout_request_id=sale.payment.provider_checkout_request_id,
                 provider_receipt_number=sale.payment.provider_receipt_number,
                 phone_number=sale.payment.phone_number,
-            )
-            if sale.payment
-            else None
+            ) if sale.payment else None
         ),
     )
 
@@ -326,15 +308,20 @@ def get_payment(
     except DukaPosError as exc:
         raise _handle_domain_error(exc) from exc
     return PaymentResponse(
-        id=payment.id,
-        method=payment.method,
-        status=payment.status,
-        amount_cents=payment.amount_cents,
-        provider=payment.provider,
-        provider_checkout_request_id=payment.provider_checkout_request_id,
-        provider_receipt_number=payment.provider_receipt_number,
-        phone_number=payment.phone_number,
+        id=payment.id, method=payment.method, status=payment.status, amount_cents=payment.amount_cents,
+        provider=payment.provider, provider_checkout_request_id=payment.provider_checkout_request_id,
+        provider_receipt_number=payment.provider_receipt_number, phone_number=payment.phone_number,
     )
+
+
+@app.post("/callbacks/daraja/stk")
+def daraja_stk_callback(
+    payload: dict,
+    conn: sqlite3.Connection = Depends(get_connection),
+) -> dict:
+    """Safaricom Daraja STK Push result callback."""
+    result = mpesa_flow_module.process_stk_callback(conn, payload)
+    return {"ResultCode": 0, "ResultDesc": "Accepted", "detail": result}
 
 
 # ---------------------------------------------------------------------------
@@ -415,27 +402,12 @@ def login(
     body: LoginRequest, conn: sqlite3.Connection = Depends(get_connection)
 ) -> LoginResponse:
     try:
-        user, token = auth_module.authenticate(
-            conn, username=body.username, password=body.password
-        )
-        audit_module.record(
-            conn,
-            action="auth.login_success",
-            user_id=user.id,
-            entity_type="user",
-            entity_id=user.id,
-            details={"username": user.username},
-        )
+        user, token = auth_module.authenticate(conn, username=body.username, password=body.password)
+        audit_module.record(conn, action="auth.login_success", user_id=user.id, entity_type="user", entity_id=user.id, details={"username": user.username})
     except InvalidCredentials as exp:
-        audit_module.record(
-            conn,
-            action="auth.login_failure",
-            details={"username": body.username},
-        )
+        audit_module.record(conn, action="auth.login_failure", details={"username": body.username})
         raise HTTPException(status_code=401, detail=str(exp)) from exp
-    return LoginResponse(
-        token=token, user_id=user.id, username=user.username, role=user.role
-    )
+    return LoginResponse(token=token, user_id=user.id, username=user.username, role=user.role)
 
 
 @app.get("/me", response_model=UserResponse)
@@ -444,14 +416,7 @@ def me(
     conn: sqlite3.Connection = Depends(get_connection),
 ) -> UserResponse:
     u = users_module.get_user(conn, user.id)
-    return UserResponse(
-        id=u.id,
-        username=u.username,
-        role=u.role,
-        active=u.active,
-        created_at=u.created_at,
-        updated_at=u.updated_at,
-    )
+    return UserResponse(id=u.id, username=u.username, role=u.role, active=u.active, created_at=u.created_at, updated_at=u.updated_at)
 
 
 @app.post("/users", response_model=UserResponse, status_code=201)
@@ -462,29 +427,13 @@ def create_user_endpoint(
 ) -> UserResponse:
     try:
         users_module.require_role(user, "OWNER")
-        created = users_module.create_user(
-            conn, username=body.username, password=body.password, role=body.role
-        )
-        audit_module.record(
-            conn,
-            action="user.create",
-            user_id=user.id,
-            entity_type="user",
-            entity_id=created.id,
-            details={"username": created.username, "role": created.role},
-        )
+        created = users_module.create_user(conn, username=body.username, password=body.password, role=body.role)
+        audit_module.record(conn, action="user.create", user_id=user.id, entity_type="user", entity_id=created.id, details={"username": created.username, "role": created.role})
     except PermissionDenied as exp:
         raise HTTPException(status_code=403, detail=str(exp)) from exp
     except DukaPosError as exp:
         raise _handle_domain_error(exp) from exp
-    return UserResponse(
-        id=created.id,
-        username=created.username,
-        role=created.role,
-        active=created.active,
-        created_at=created.created_at,
-        updated_at=created.updated_at,
-    )
+    return UserResponse(id=created.id, username=created.username, role=created.role, active=created.active, created_at=created.created_at, updated_at=created.updated_at)
 
 
 @app.post("/shifts/open", response_model=ShiftResponse, status_code=201)
@@ -494,17 +443,8 @@ def open_shift_endpoint(
     conn: sqlite3.Connection = Depends(get_connection),
 ) -> ShiftResponse:
     try:
-        shift = shifts_module.open_shift(
-            conn, user_id=user.id, opening_cash_cents=body.opening_cash_cents
-        )
-        audit_module.record(
-            conn,
-            action="shift.open",
-            user_id=user.id,
-            entity_type="shift",
-            entity_id=shift.id,
-            details={"opening_cash_cents": body.opening_cash_cents},
-        )
+        shift = shifts_module.open_shift(conn, user_id=user.id, opening_cash_cents=body.opening_cash_cents)
+        audit_module.record(conn, action="shift.open", user_id=user.id, entity_type="shift", entity_id=shift.id, details={"opening_cash_cents": body.opening_cash_cents})
     except DukaPosError as exp:
         raise _handle_domain_error(exp) from exp
     return ShiftResponse(**shift.__dict__)
@@ -523,32 +463,14 @@ def current_shift(
 
 @app.post("/shifts/{shift_id}/close", response_model=ShiftResponse)
 def close_shift_endpoint(
-    shift_id: int,
-    body: ShiftCloseRequest,
+    shift_id: int, body: ShiftCloseRequest,
     user: auth_module.AuthUser = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_connection),
 ) -> ShiftResponse:
     try:
         allow_manager = user.role in ("OWNER", "MANAGER")
-        shift = shifts_module.close_shift(
-            conn,
-            shift_id=shift_id,
-            closing_cash_cents=body.closing_cash_cents,
-            acting_user_id=user.id,
-            allow_manager=allow_manager,
-        )
-        audit_module.record(
-            conn,
-            action="shift.close",
-            user_id=user.id,
-            entity_type="shift",
-            entity_id=shift.id,
-            details={
-                "closing_cash_cents": body.closing_cash_cents,
-                "expected_cash_cents": shift.expected_cash_cents,
-                "variance_cents": shift.variance_cents,
-            },
-        )
+        shift = shifts_module.close_shift(conn, shift_id=shift_id, closing_cash_cents=body.closing_cash_cents, acting_user_id=user.id, allow_manager=allow_manager)
+        audit_module.record(conn, action="shift.close", user_id=user.id, entity_type="shift", entity_id=shift.id, details={"closing_cash_cents": body.closing_cash_cents, "expected_cash_cents": shift.expected_cash_cents, "variance_cents": shift.variance_cents})
     except DukaPosError as exp:
         raise _handle_domain_error(exp) from exp
     return ShiftResponse(**shift.__dict__)
@@ -556,24 +478,15 @@ def close_shift_endpoint(
 
 @app.post("/sales/{sale_id}/void", status_code=200)
 def void_sale_endpoint(
-    sale_id: int,
-    body: VoidRequest,
+    sale_id: int, body: VoidRequest,
     user: auth_module.AuthUser = Depends(get_current_user),
     conn: sqlite3.Connection = Depends(get_connection),
 ) -> dict:
     try:
         users_module.require_role(user, "OWNER", "MANAGER")
-        rev = reversals_module.void_sale(
-            conn, sale_id=sale_id, performed_by=user.id, reason=body.reason
-        )
+        rev = reversals_module.void_sale(conn, sale_id=sale_id, performed_by=user.id, reason=body.reason)
     except PermissionDenied as exp:
         raise HTTPException(status_code=403, detail=str(exp)) from exp
     except DukaPosError as exp:
         raise _handle_domain_error(exp) from exp
-    return {
-        "id": rev.id,
-        "sale_id": rev.sale_id,
-        "reversal_type": rev.reversal_type,
-        "performed_by": rev.performed_by,
-        "performed_at": rev.performed_at,
-    }
+    return {"id": rev.id, "sale_id": rev.sale_id, "reversal_type": rev.reversal_type, "performed_by": rev.performed_by, "performed_at": rev.performed_at}
