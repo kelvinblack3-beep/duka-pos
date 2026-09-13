@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS sales (
 -- price changes must never alter historical sales.
 CREATE TABLE IF NOT EXISTS sale_lines (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_id            INTEGER NOT NULL REFERENCES products (id),
+    sale_id            INTEGER NOT NULL REFERENCES sales (id),
     product_id         INTEGER NOT NULL REFERENCES products (id),
     quantity_milli     INTEGER NOT NULL CHECK (quantity_milli > 0),
     unit_price_cents   INTEGER NOT NULL CHECK (unit_price_cents >= 0),
