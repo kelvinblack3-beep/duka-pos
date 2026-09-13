@@ -1,0 +1,2 @@
+# Local SQLite files and backups will live in this directory in later
+# milestones. They are gitignored. This file keeps the directory in git.

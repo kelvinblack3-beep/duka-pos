@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duka-pos"
+version = "0.0.1"
+description = "Local-first point of sale for Kenyan mini-marts"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "kelvinblack3-beep" },
+]
+keywords = ["pos", "kenya", "retail", "local-first"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Point-Of-Sale",
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/kelvinblack3-beep/duka-pos"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
