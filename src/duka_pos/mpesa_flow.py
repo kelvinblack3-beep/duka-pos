@@ -121,6 +121,33 @@ def process_stk_callback(conn, payload: dict[str, Any], *, user_id=None) -> dict
     if payment.status in ("FAILED", "CANCELLED", "REVERSED", "REFUNDED"):
         return {"ok": True, "reason": "already_terminal", "payment_id": payment.id, "status": payment.status}
 
+    # Correlation: CheckoutRequestID already matched via lookup; also require MerchantRequestID
+    # on THIS payment (not merely "not used elsewhere").
+    stored_checkout = payment.provider_checkout_request_id
+    stored_merchant = payment.provider_merchant_request_id
+    callback_merchant = parsed["merchant_request_id"]
+    if stored_checkout is not None and stored_checkout != checkout:
+        audit_module.record(
+            conn, action="payment.callback_rejected", user_id=user_id,
+            entity_type="payment", entity_id=payment.id,
+            details={"reason": "checkout_mismatch", "stored": stored_checkout, "callback": checkout},
+        )
+        conn.commit()
+        return {"ok": False, "reason": "checkout_mismatch", "payment_id": payment.id}
+    if stored_merchant is None or str(stored_merchant) != str(callback_merchant):
+        audit_module.record(
+            conn, action="payment.callback_rejected", user_id=user_id,
+            entity_type="payment", entity_id=payment.id,
+            details={
+                "reason": "merchant_mismatch",
+                "stored": stored_merchant,
+                "callback": callback_merchant,
+                "checkout_request_id": checkout,
+            },
+        )
+        conn.commit()
+        return {"ok": False, "reason": "merchant_mismatch", "payment_id": payment.id}
+
     if parsed["result_code"] != 0:
         target = "CANCELLED" if parsed["result_code"] == 1032 else "FAILED"
         try:
@@ -131,6 +158,38 @@ def process_stk_callback(conn, payload: dict[str, Any], *, user_id=None) -> dict
         except Exception:
             pass
         return {"ok": True, "reason": "provider_failure", "result_code": parsed["result_code"], "payment_id": payment.id, "status": target}
+
+    # Phone correlation when Daraja includes PhoneNumber (omit check if absent).
+    cb_phone = parsed.get("phone_number")
+    if cb_phone is not None and str(cb_phone).strip() != "":
+        try:
+            cb_norm = normalize_ke_msisdn(str(cb_phone))
+        except InvalidSaleData:
+            audit_module.record(
+                conn, action="payment.callback_rejected", user_id=user_id,
+                entity_type="payment", entity_id=payment.id,
+                details={"reason": "phone_invalid", "callback_phone": str(cb_phone)},
+            )
+            conn.commit()
+            return {"ok": False, "reason": "phone_invalid", "payment_id": payment.id}
+        stored_phone = payment.phone_number
+        if stored_phone:
+            try:
+                stored_norm = normalize_ke_msisdn(stored_phone)
+            except InvalidSaleData:
+                stored_norm = None
+            if stored_norm is not None and stored_norm != cb_norm:
+                audit_module.record(
+                    conn, action="payment.callback_rejected", user_id=user_id,
+                    entity_type="payment", entity_id=payment.id,
+                    details={
+                        "reason": "phone_mismatch",
+                        "stored": stored_norm,
+                        "callback": cb_norm,
+                    },
+                )
+                conn.commit()
+                return {"ok": False, "reason": "phone_mismatch", "payment_id": payment.id}
 
     amount_kes = parsed.get("amount_kes")
     if amount_kes is None:
