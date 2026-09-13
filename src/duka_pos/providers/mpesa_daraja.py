@@ -274,10 +274,10 @@ def parse_stk_callback(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("callback missing ResultCode")
     try:
         result_code_int = int(stk["ResultCode"])
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as err:
         raise ValueError(
             f"callback ResultCode is not numeric: {stk.get('ResultCode')!r}"
-        ) from exp
+        ) from err
     meta: dict[str, Any] = {}
     cb_meta = stk.get("CallbackMetadata")
     if isinstance(cb_meta, dict):
@@ -316,10 +316,10 @@ def parse_stk_query_response(data: dict[str, Any]) -> StkQueryResult:
         raise ValueError("STK query response missing ResultCode")
     try:
         result_code_int = int(data["ResultCode"])
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as err:
         raise ValueError(
             f"STK query ResultCode is not numeric: {data.get('ResultCode')!r}"
-        ) from exp
+        ) from err
     merchant = data.get("MerchantRequestID")
     checkout = data.get("CheckoutRequestID")
     amount_kes = None
