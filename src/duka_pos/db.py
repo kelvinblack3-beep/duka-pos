@@ -62,10 +62,29 @@ def connect(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Apply the schema. Safe to call repeatedly (CREATE TABLE IF NOT EXISTS)."""
+    """Apply the schema. Safe to call repeatedly (CREATE TABLE IF NOT EXISTS).
+
+    Also applies small deterministic column migrations required by M2
+    without a heavyweight migration tool.
+    """
     schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
     with conn:
         conn.executescript(schema_sql)
+        # M2: optional shift linkage on sales (nullable for pre-M2 rows).
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(sales)").fetchall()
+        }
+        if "shift_id" not in cols:
+            conn.execute(
+                "ALTER TABLE sales ADD COLUMN shift_id INTEGER "
+                "REFERENCES shifts (id)"
+            )
+        if "user_id" not in cols:
+            conn.execute(
+                "ALTER TABLE sales ADD COLUMN user_id INTEGER "
+                "REFERENCES users (id)"
+            )
 
 
 def connect_and_init(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
