@@ -64,9 +64,9 @@ def test_sale_rejects_unsupported_payment_method(conn: sqlite3.Connection) -> No
     with pytest.raises(UnsupportedPaymentMethod):
         sales_module.create_sale(
             conn,
-            client_reference="mpesa-not-yet-001",
+            client_reference="card-not-yet-001",
             lines=[{"product_id": rice.id, "quantity_milli": 1000}],
-            payment_method="MPESA",
+            payment_method="CARD",
         )
 
 
