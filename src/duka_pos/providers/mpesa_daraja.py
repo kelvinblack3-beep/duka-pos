@@ -277,7 +277,7 @@ def parse_stk_callback(payload: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"callback ResultCode is not numeric: {stk.get('ResultCode')!r}"
-        ) from exc
+        ) from exp
     meta: dict[str, Any] = {}
     cb_meta = stk.get("CallbackMetadata")
     if isinstance(cb_meta, dict):
@@ -327,7 +327,7 @@ def parse_stk_query_response(data: dict[str, Any]) -> StkQueryResult:
     phone = None
     if "Amount" in data and data["Amount"] is not None:
         try:
-            amount_kes = int(float(data["Amount"])
+            amount_kes = int(float(data["Amount"]))
         except (TypeError, ValueError):
             pass
     if data.get("MpesaReceiptNumber") is not None:
