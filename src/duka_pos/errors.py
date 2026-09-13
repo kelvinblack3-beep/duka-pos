@@ -45,11 +45,10 @@ class InsufficientStock(DukaPosError):
 
 
 class UnsupportedPaymentMethod(DukaPosError):
-    """Raised when a payment method other than CASH is requested in M1.
+    """Raised when a payment method is not supported by the current domain.
 
-    M1 intentionally implements CASH only. M-Pesa and card are future,
-    real-adapter work — never faked. See ARCHITECTURE.md and
-    AI_ENGINEERING_PROTOCOL.md.
+    CASH is fully supported. MPESA pending local records are supported in
+    M3.1; Daraja network integration is M3.2. CARD/OTHER remain unsupported.
     """
 
 
@@ -120,3 +119,24 @@ class SaleAlreadyReversed(DukaPosError):
 
 class InvalidReversal(DukaPosError):
     """Raised when a void/return request is invalid."""
+
+
+# ---------------------------------------------------------------------------
+# M3.1 payment errors
+# ---------------------------------------------------------------------------
+
+
+class PaymentNotFound(DukaPosError):
+    """Raised when a payment id does not exist."""
+
+
+class InvalidPaymentTransition(DukaPosError):
+    """Raised when a payment status transition is not allowed."""
+
+
+class PaymentConflict(DukaPosError):
+    """Raised on amount/reference conflicts or inconsistent sale state."""
+
+
+class PaymentAlreadyFinal(DukaPosError):
+    """Raised when an operation requires a non-terminal payment status."""
